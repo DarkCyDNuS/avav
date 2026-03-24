@@ -1,0 +1,242 @@
+// VERSION FINAL PRO: UI + STORAGE LOCAL + GOOGLE SHEETS
+import React, { useEffect, useMemo, useState } from "react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Plus, MessageCircle, CheckCircle2, Copy, Cloud } from "lucide-react";
+
+const PRICE_PER_KG = 1650;
+
+// 🔴 PEGA TU URL DE GOOGLE SCRIPT AQUÍ
+const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzjPetCqGRVdwoDVAQoqm1b-jplY127ggfx95ujNt9-knoKedeGmS5FSujjHoubtMBj/exec";
+
+// ================= UTILIDADES =================
+const currency = (value) =>
+  new Intl.NumberFormat("es-CL", {
+    style: "currency",
+    currency: "CLP",
+    maximumFractionDigits: 0,
+  }).format(Number(value || 0));
+
+const cleanPhone = (phone) => {
+  let cleaned = phone.replace(/[^\d]/g, "");
+  if (!cleaned.startsWith("56")) cleaned = "56" + cleaned;
+  return cleaned;
+};
+
+const calculateSubtotal = (kg) => Number(kg || 0) * PRICE_PER_KG;
+
+const computeOrder = (o) => {
+  const kg = Number(o.breadKg || 0);
+  const subtotal = calculateSubtotal(kg);
+  const total = subtotal;
+
+  return {
+    ...o,
+    computedBreadKg: kg,
+    computedTotal: total,
+    computedPending: Math.max(total - Number(o.amountPaid || 0), 0),
+  };
+};
+
+const buildWhatsappMessage = (o) =>
+  [
+    `Hola ${o.customerName} 🥖`,
+    `📦 ${o.orderItems}`,
+    `⚖️ ${o.computedBreadKg} kg`,
+    `💰 Total: ${currency(o.computedTotal)}`,
+    `💳 Estado: ${o.paymentStatus === "Pagado" ? "✅ Pagado" : "⏳ Pendiente"}`,
+  ].join("\n");
+
+// ================= GOOGLE SHEETS =================
+const saveToGoogleSheets = async (order) => {
+  try {
+    await fetch(GOOGLE_SCRIPT_URL, {
+      method: "POST",
+      body: JSON.stringify({
+        customerName: order.customerName,
+        customerPhone: order.customerPhone,
+        orderItems: order.orderItems,
+        breadKg: order.computedBreadKg,
+        total: order.computedTotal,
+        paymentStatus: order.paymentStatus,
+      }),
+    });
+  } catch (err) {
+    console.error("Error Sheets", err);
+  }
+};
+
+// ================= APP =================
+export default function App() {
+  const [orders, setOrders] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+
+  const [form, setForm] = useState({
+    customerName: "",
+    customerPhone: "",
+    orderItems: "",
+    breadKg: "",
+    paymentStatus: "Pendiente",
+  });
+
+  // STORAGE LOCAL
+  useEffect(() => {
+    const saved = localStorage.getItem("orders");
+    if (saved) setOrders(JSON.parse(saved));
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem("orders", JSON.stringify(orders));
+  }, [orders]);
+
+  const computedOrders = useMemo(() => orders.map(computeOrder), [orders]);
+
+  // ================= ACCIONES =================
+  const handleSubmit = () => {
+    const newOrder = {
+      ...form,
+      id: Date.now(),
+      amountPaid: 0,
+    };
+
+    const computed = computeOrder(newOrder);
+
+    setOrders((prev) => [newOrder, ...prev]);
+
+    // 🔥 GUARDADO AUTOMÁTICO EN GOOGLE SHEETS
+    saveToGoogleSheets(computed);
+
+    setForm({ customerName: "", customerPhone: "", orderItems: "", breadKg: "" });
+    setOpen(false);
+  };
+
+  const handleMarkAsPaid = (id) => {
+    setOrders((prev) =>
+      prev.map((o) => {
+        if (o.id !== id) return o;
+        const c = computeOrder(o);
+
+        const updated = {
+          ...o,
+          paymentStatus: "Pagado",
+          amountPaid: c.computedTotal,
+        };
+
+        // 🔥 ACTUALIZAR EN SHEETS TAMBIÉN
+        saveToGoogleSheets(computeOrder(updated));
+
+        return updated;
+      })
+    );
+  };
+
+  const syncAllToSheets = async () => {
+    setSyncing(true);
+
+    for (const order of computedOrders) {
+      await saveToGoogleSheets(order);
+    }
+
+    setSyncing(false);
+    alert("Sincronización completa 🚀");
+  };
+
+  const copy = (text) => navigator.clipboard.writeText(text);
+
+  // ================= UI =================
+  return (
+    <div className="min-h-screen bg-slate-50 p-6">
+      <div className="max-w-5xl mx-auto space-y-6">
+
+        <div className="flex justify-between items-center">
+          <h1 className="text-3xl font-bold">Casa Bravo</h1>
+
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={syncAllToSheets} className="rounded-2xl">
+              <Cloud className="mr-2 h-4 w-4" /> {syncing ? "Sincronizando..." : "Sync Sheets"}
+            </Button>
+
+            <Dialog open={open} onOpenChange={setOpen}>
+              <DialogTrigger asChild>
+                <Button className="rounded-2xl">
+                  <Plus className="mr-2 h-4 w-4" /> Nuevo
+                </Button>
+              </DialogTrigger>
+
+              <DialogContent className="rounded-2xl">
+                <DialogHeader>
+                  <DialogTitle>Nuevo pedido</DialogTitle>
+                </DialogHeader>
+
+                <div className="space-y-3">
+                  <Input placeholder="Nombre" value={form.customerName} onChange={(e)=>setForm({...form, customerName:e.target.value})}/>
+                  <Input placeholder="WhatsApp" value={form.customerPhone} onChange={(e)=>setForm({...form, customerPhone:e.target.value})}/>
+                  <Input placeholder="Pedido" value={form.orderItems} onChange={(e)=>setForm({...form, orderItems:e.target.value})}/>
+                  <Input type="number" placeholder="Kg" value={form.breadKg} onChange={(e)=>setForm({...form, breadKg:e.target.value})}/>
+
+                  <Button onClick={handleSubmit} className="w-full rounded-2xl">
+                    Guardar pedido
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+          </div>
+        </div>
+
+        <div className="grid gap-4">
+          {computedOrders.map((o) => {
+            const msg = buildWhatsappMessage(o);
+
+            return (
+              <Card key={o.id} className="rounded-2xl shadow-sm">
+                <CardContent className="p-5 space-y-3">
+
+                  <div className="flex justify-between">
+                    <div>
+                      <h2 className="font-semibold">{o.customerName}</h2>
+                      <p className="text-sm text-slate-500">{o.customerPhone}</p>
+                    </div>
+
+                    <Badge>{o.paymentStatus}</Badge>
+                  </div>
+
+                  <p className="text-sm">{o.orderItems}</p>
+
+                  <div className="flex justify-between text-sm">
+                    <span>{o.computedBreadKg} kg</span>
+                    <span className="font-semibold">{currency(o.computedTotal)}</span>
+                  </div>
+
+                  <div className="flex gap-2 flex-wrap">
+                    <Button size="sm" asChild>
+                      <a href={`https://wa.me/${cleanPhone(o.customerPhone)}?text=${encodeURIComponent(msg)}`} target="_blank">
+                        <MessageCircle className="mr-2 h-4 w-4"/> WhatsApp
+                      </a>
+                    </Button>
+
+                    <Button size="sm" variant="outline" onClick={()=>copy(msg)}>
+                      <Copy className="mr-2 h-4 w-4"/> Copiar
+                    </Button>
+
+                    {o.paymentStatus !== "Pagado" && (
+                      <Button size="sm" variant="outline" onClick={()=>handleMarkAsPaid(o.id)}>
+                        <CheckCircle2 className="mr-2 h-4 w-4"/> Pagado
+                      </Button>
+                    )}
+                  </div>
+
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
